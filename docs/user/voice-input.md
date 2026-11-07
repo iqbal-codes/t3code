@@ -23,6 +23,28 @@ Set it back to **Off** at any time; a recording in progress is discarded.
 If the chosen environment goes offline, voice input waits for it. T3 Code never
 substitutes another environment.
 
+## Transcribe with an endpoint
+
+Instead of a downloaded model, an environment can send recordings to any
+OpenAI-compatible transcription endpoint, such as a local router. In
+**Settings → Voice → Transcription**, set **Transcription source** to **Endpoint**,
+then enter the endpoint's base URL (for example `http://127.0.0.1:20128/v1`), the
+model name it expects, and an API key when it needs one. The key is stored on that
+environment.
+
+T3 Code posts each recording to `{baseUrl}/audio/transcriptions` as a WAV file
+with the model name, and reads the `text` field of the response. It sends nothing
+else: endpoints that implement only a whisper subset, such as a Codex
+transcription route, reject extra fields like a language or prompt, so the
+endpoint detects the language itself. Your dictionary still corrects the returned
+text, and the endpoint's own limits apply; a router that caps recordings at two
+minutes refuses longer ones, and a failed transcription inserts nothing.
+
+The endpoint must be reachable from the environment that transcribes, and an
+endpoint change takes effect on the next recording. Switching back to **Local
+model** needs a downloaded model on that environment. Endpoint transcription does
+not stream, so live preview is unavailable with it.
+
 ## Set up a model
 
 The first time you dictate, T3 Code offers to download the recommended English
@@ -77,6 +99,7 @@ are down, and **Toggle** always needs a second press. Change the chord itself in
 - **Silence filtering** is on by default. Your chosen environment skips non-speech
   audio before transcription. Turn it off to keep those sections. Filtering happens
   after upload: it does not grant permission to send audio or reduce how much is sent.
+  With an **Endpoint** source T3 Code does not filter; the endpoint handles silence.
 - **Remove filler words** drops hesitation sounds from finished transcripts.
 
 Language and these preferences travel with each recording to the chosen

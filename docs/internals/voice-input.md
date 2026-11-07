@@ -53,6 +53,30 @@ The Silero silence detector is optional. If its download fails, recordings use
 raw audio during the retry cooldown so a detector outage cannot block dictation.
 Explicitly installing a speech model also retries the detector without waiting.
 
+## Provider transcriber
+
+An environment can instead transcribe at an OpenAI-compatible endpoint
+(`speechTranscriber`, with `speechProviderBaseUrl`, `speechProviderModel`, and
+`speechProviderApiKey`). The key is a secret setting under its own
+`settingsSecrets.ts` group, so clients see the redaction marker and the service
+reads the materialized value.
+
+The service captures `HttpClient` at construction: a method's effect runs in the
+caller's context, which carries no HTTP client. Transcription still holds the one
+exclusive slot, so a provider request and a native inference never overlap.
+
+Clients send 16 kHz mono Float32 PCM; the provider needs a file, so the service
+wraps those samples in a WAV header and posts `file`, `model`, and
+`response_format=json` only. Do not add `language` or `prompt` for quality:
+endpoints that implement the Codex transcription subset reject unknown fields with
+a 400, and the whole recording fails. Post-processing still applies the local
+dictionary and filler-word removal to the returned text.
+
+Provider mode reports `transcriber: "provider"` with no streaming and no model, so
+`prepareModel` is a no-op and `startStream` refuses. The `voiceTranscription`
+capability keeps following platform support, so provider mode is only offered
+where voice input is already enabled.
+
 ## Cancellation and resource ownership
 
 Cancellation invalidates a result immediately, but resources stay owned until the

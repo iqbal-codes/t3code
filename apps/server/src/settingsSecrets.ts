@@ -49,6 +49,8 @@ const providerSecretFields = new Map([
 const usageLimitSecretFields = secretSettingsFields(UsageLimitSourceConfig);
 const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const simlockDeviceHostSecretFields = secretSettingsFields(SimlockDeviceHostConfig);
+// A transcriber endpoint's credential is environment state, like the rest of the voice settings.
+const speechSecretFields = ["speechProviderApiKey"];
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 
 export interface SettingsSecret {
@@ -232,8 +234,15 @@ function mapSecretFieldGroups(
       ) as SimlockDeviceHostConfig,
   );
 
+  const speech = mapFields(
+    { speechProviderApiKey: settings.speechProviderApiKey },
+    speechSecretFields,
+    (field) => `speech-${encode(field)}`,
+  );
+
   return {
     ...settings,
+    ...speech,
     providerInstances,
     sourceControlHosts,
     usageLimitSources,

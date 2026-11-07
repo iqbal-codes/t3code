@@ -5,13 +5,17 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as TestClock from "effect/testing/TestClock";
 import * as Fiber from "effect/Fiber";
+import { FetchHttpClient, Headers, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
+import type { HttpClientRequest } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
 import * as PlatformError from "effect/PlatformError";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SecretResolver } from "@t3tools/secret-provider-core/server/SecretResolver";
 import { DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS } from "@t3tools/contracts";
 import * as ServerSettings from "../serverSettings.ts";
 import { listNativeSpeechGpuDevices } from "./native.ts";
@@ -105,9 +109,19 @@ const store = Layer.succeed(
       }),
   }),
 );
+const secretResolver = Layer.succeed(
+  SecretResolver,
+  SecretResolver.of({
+    read: (references) => Effect.succeed(references.map(() => undefined)),
+    invalidate: () => Effect.void,
+    label: (provider) => Effect.succeed(provider),
+  }),
+);
 const layer = SpeechService.layer.pipe(
   Layer.provide(store),
   Layer.provideMerge(ServerSettings.layerTest({ speechModelId: "test-model" })),
+  Layer.provide(secretResolver),
+  Layer.provide(FetchHttpClient.layer),
   Layer.provide(NodeServices.layer),
 );
 const pcm = () => new Uint8Array(new Float32Array([0.25]).buffer);
@@ -842,3 +856,101 @@ it.effect("does not restart a stream cancelled while native finalization is pend
     expect(native.reset).toHaveBeenCalledOnce();
   }).pipe(Effect.provide(layer)),
 );
+
+function providerTestLayer(options: {
+  readonly respond: () => Response;
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+}) {
+  const requests: HttpClientRequest.HttpClientRequest[] = [];
+  const client = HttpClient.make((request) => {
+    requests.push(request);
+    return Effect.succeed(HttpClientResponse.fromWeb(request, options.respond()));
+  });
+  const layer = SpeechService.layer.pipe(
+    Layer.provide(store),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        speechModelId: "test-model",
+        speechTranscriber: "provider",
+        speechProviderBaseUrl: options.baseUrl ?? "http://127.0.0.1:20128/v1/",
+        speechProviderModel: "cx/transcribe",
+        speechProviderApiKey: options.apiKey ?? "sk-test",
+      }),
+    ),
+    Layer.provide(Layer.succeed(HttpClient.HttpClient, client)),
+    Layer.provide(secretResolver),
+    Layer.provide(NodeServices.layer),
+  );
+  return { layer, requests };
+}
+
+it.effect(
+  "sends the recording as a WAV to the configured endpoint and returns its transcript",
+  () => {
+    const { layer, requests } = providerTestLayer({
+      respond: () => new Response(JSON.stringify({ text: "hello from the router" })),
+    });
+    return Effect.gen(function* () {
+      const speech = yield* SpeechService.SpeechService;
+      const text = yield* speech.transcribe(pcm(), DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS);
+      expect(text).toBe("hello from the router");
+      expect(requests).toHaveLength(1);
+      const [request] = requests;
+      if (request === undefined) throw new Error("expected one request");
+      expect(request.method).toBe("POST");
+      expect(request.url).toBe("http://127.0.0.1:20128/v1/audio/transcriptions");
+      expect(Option.getOrUndefined(Headers.get(request.headers, "authorization"))).toBe(
+        "Bearer sk-test",
+      );
+      if (!(request.body instanceof HttpBody.FormData)) throw new Error("expected form data");
+      const form = request.body.formData;
+      expect(form.get("model")).toBe("cx/transcribe");
+      expect(form.get("response_format")).toBe("json");
+      // Endpoints such as a local router reject extras like `language` and `prompt`.
+      expect(form.get("language")).toBeNull();
+      expect(form.get("prompt")).toBeNull();
+      const file = form.get("file");
+      expect(file).toBeInstanceOf(Blob);
+      expect((file as Blob).type).toBe("audio/wav");
+      const wav = new Uint8Array(yield* Effect.promise(() => (file as Blob).arrayBuffer()));
+      expect(wav.byteLength).toBe(46);
+      expect(new TextDecoder().decode(wav.subarray(0, 4))).toBe("RIFF");
+      expect(new TextDecoder().decode(wav.subarray(8, 12))).toBe("WAVE");
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("reports a configured endpoint as ready without preparing a local model", () => {
+  const { layer } = providerTestLayer({ respond: () => new Response("{}") });
+  return Effect.gen(function* () {
+    const speech = yield* SpeechService.SpeechService;
+    const status = yield* speech.status;
+    expect(status).toMatchObject({
+      supported: true,
+      transcriber: "provider",
+      provider: { baseUrl: "http://127.0.0.1:20128/v1", model: "cx/transcribe" },
+      state: "ready",
+      modelId: "cx/transcribe",
+      supportsStreaming: false,
+    });
+    yield* speech.prepareModel;
+    expect(loadNative).not.toHaveBeenCalled();
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("fails with the endpoint's rejection and adds no transcript", () => {
+  const { layer } = providerTestLayer({
+    respond: () => new Response(JSON.stringify({ error: "bad model" }), { status: 400 }),
+  });
+  return Effect.gen(function* () {
+    const speech = yield* SpeechService.SpeechService;
+    const result = yield* Effect.result(
+      speech.transcribe(pcm(), DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS),
+    );
+    expect(Result.isFailure(result)).toBe(true);
+    const failure = Result.isFailure(result) ? result.failure : undefined;
+    expect(failure).toMatchObject({ _tag: "SpeechOperationError" });
+    expect(String((failure as { cause?: unknown }).cause)).toContain("400");
+  }).pipe(Effect.provide(layer));
+});

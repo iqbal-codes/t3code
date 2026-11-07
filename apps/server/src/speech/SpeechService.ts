@@ -2,10 +2,12 @@ import {
   SPEECH_STREAM_MAX_CHUNK_BYTES,
   type EnvironmentSpeechModel,
   type EnvironmentSpeechStatus,
+  type SettingsSecretValue,
   type SpeechAcceleration,
   type SpeechModelUnloadTimeout,
   type SpeechTranscriptionOptions,
 } from "@t3tools/contracts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -15,13 +17,16 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ServerSettings from "../serverSettings.ts";
+import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import { makeSpeechTextCorrector, normalizeSpeechCustomWords } from "./customWords.ts";
 import { removeSpeechFillerWords } from "./fillerWords.ts";
 import {
@@ -78,6 +83,44 @@ export class SpeechOperationError extends Schema.TaggedError<SpeechOperationErro
   override get message(): string {
     return `Environment speech ${this.operation} failed.`;
   }
+}
+
+const WAV_HEADER_BYTES = 44;
+const PCM16_MAX = 32_767;
+const decodeJsonBody = Schema.decodeOption(Schema.fromJsonString(Schema.Unknown));
+
+/** A WAV container for the float PCM clients send, so an endpoint can decode it as 16-bit mono. */
+function encodeSpeechWav(pcm: Float32Array): Uint8Array {
+  const dataBytes = pcm.length * Int16Array.BYTES_PER_ELEMENT;
+  const bytes = new Uint8Array(WAV_HEADER_BYTES + dataBytes);
+  const view = new DataView(bytes.buffer);
+  const writeText = (offset: number, text: string) => {
+    for (let index = 0; index < text.length; index += 1) {
+      bytes[offset + index] = text.charCodeAt(index);
+    }
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, SAMPLE_RATE, true);
+  view.setUint32(28, SAMPLE_RATE * Int16Array.BYTES_PER_ELEMENT, true);
+  view.setUint16(32, Int16Array.BYTES_PER_ELEMENT, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, dataBytes, true);
+  for (let index = 0; index < pcm.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, pcm[index] ?? 0));
+    view.setInt16(
+      WAV_HEADER_BYTES + index * Int16Array.BYTES_PER_ELEMENT,
+      Math.round(sample * PCM16_MAX),
+      true,
+    );
+  }
+  return bytes;
 }
 
 export class SpeechUnsupportedPlatformError extends Schema.TaggedError<SpeechUnsupportedPlatformError>()(
@@ -168,6 +211,9 @@ const make = Effect.gen(function* () {
   const architecture = yield* HostProcess.Architecture;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const store = yield* SpeechModelStore.SpeechModelStore;
+  const secrets = yield* SecretResolver.SecretResolver;
+  // Captured here: a method's effect runs in the caller's context, which has no HttpClient.
+  const httpClient = yield* HttpClient.HttpClient;
   const scope = yield* Effect.scope;
   const clock = yield* Clock.Clock;
   const now = () => clock.currentTimeMillisUnsafe();
@@ -400,6 +446,60 @@ const make = Effect.gen(function* () {
   const attempt = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
     Effect.tryPromise({ try: run, catch: (cause) => speechError(operation, cause) });
 
+  type SpeechProvider = {
+    readonly baseUrl: string;
+    readonly model: string;
+    readonly apiKey: SettingsSecretValue;
+  };
+
+  const providerTranscriber = (settings: SettingsSnapshot): SpeechProvider | undefined => {
+    const baseUrl = settings.speechProviderBaseUrl.trim().replace(/\/+$/, "");
+    const model = settings.speechProviderModel.trim();
+    if (settings.speechTranscriber !== "provider" || baseUrl === "" || model === "")
+      return undefined;
+    return { baseUrl, model, apiKey: settings.speechProviderApiKey };
+  };
+
+  // OpenAI's `/audio/transcriptions` contract: the recording and the model, nothing else.
+  // Endpoints such as a local router reject unknown extras like `language` or `prompt`.
+  const transcribeWithProvider = Effect.fn("SpeechService.transcribeWithProvider")(function* (
+    provider: SpeechProvider,
+    apiKey: string,
+    pcm: Float32Array,
+  ) {
+    const form = new FormData();
+    form.append("file", new Blob([encodeSpeechWav(pcm)], { type: "audio/wav" }), "recording.wav");
+    form.append("model", provider.model);
+    form.append("response_format", "json");
+    const response = yield* httpClient.execute(
+      HttpClientRequest.post(`${provider.baseUrl}/audio/transcriptions`).pipe(
+        HttpClientRequest.bodyFormData(form),
+        HttpClientRequest.setHeaders(apiKey === "" ? {} : { authorization: `Bearer ${apiKey}` }),
+      ),
+    );
+    const body = yield* response.text;
+    const detail = body.trim() === "" ? "" : `: ${body.slice(0, 500)}`;
+    if (response.status < 200 || response.status >= 300)
+      return yield* new SpeechOperationError({
+        operation: "provider transcription",
+        cause: new Error(
+          `transcription endpoint ${provider.baseUrl} returned ${response.status}${detail}`,
+        ),
+      });
+    const payload = decodeJsonBody(body);
+    const value: unknown = Option.isSome(payload) ? payload.value : undefined;
+    const text =
+      typeof value === "object" && value !== null
+        ? ((value as Record<string, unknown>).text ?? (value as Record<string, unknown>).transcript)
+        : undefined;
+    if (typeof text !== "string")
+      return yield* new SpeechOperationError({
+        operation: "provider transcription",
+        cause: new Error(`transcription endpoint ${provider.baseUrl} returned no text${detail}`),
+      });
+    return text;
+  });
+
   // The busy slot is released by a finalizer, so interrupting the fiber frees it at
   // once instead of waiting for native work that may never settle.
   const exclusive = <A, E, R>(operation: string, effect: Effect.Effect<A, E, R>) =>
@@ -448,11 +548,32 @@ const make = Effect.gen(function* () {
   const currentStatus = Effect.fn("SpeechService.currentStatus")(function* (
     settings: SettingsSnapshot,
   ): Effect.fn.Return<EnvironmentSpeechStatus> {
+    // A configured endpoint transcribes without a model, on any platform that runs the server.
+    const provider = providerTranscriber(settings);
+    if (provider) {
+      return {
+        supported: true,
+        transcriber: "provider",
+        provider: { baseUrl: provider.baseUrl, model: provider.model },
+        state: activeTranscriptions > 0 ? "transcribing" : "ready",
+        modelId: provider.model,
+        model: provider.model,
+        size: 0,
+        supportsStreaming: false,
+        supportsBufferedStreaming: false,
+        supportsTranslation: false,
+        supportsLanguageDetection: true,
+        acceleration: "auto",
+        modelUnloadTimeout: "never",
+        gpuDevices: [],
+      };
+    }
     if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     const definition = selectedModel(settings);
     const ready = yield* store.isReady(definition);
     return {
       supported: true,
+      transcriber: "local",
       state: activeTranscriptions > 0 ? "transcribing" : ready ? "ready" : "missing-model",
       modelId: definition.id,
       model: definition.name,
@@ -537,28 +658,32 @@ const make = Effect.gen(function* () {
 
   const prepareModel = readSettings("model preparation").pipe(
     Effect.flatMap((settings) =>
-      exclusive(
-        "model preparation",
-        requireSupported.pipe(
-          Effect.andThen(installedModelPath(selectedModel(settings))),
-          Effect.flatMap((modelPath) =>
-            attempt("model preparation", (signal) =>
-              loadModel(
-                modelPath,
-                selectedModel(settings),
-                AbortSignal.any([signal, lifetime.signal]),
-                settings.speechAcceleration,
+      providerTranscriber(settings)
+        ? Effect.void
+        : exclusive(
+            "model preparation",
+            requireSupported.pipe(
+              Effect.andThen(installedModelPath(selectedModel(settings))),
+              Effect.flatMap((modelPath) =>
+                attempt("model preparation", (signal) =>
+                  loadModel(
+                    modelPath,
+                    selectedModel(settings),
+                    AbortSignal.any([signal, lifetime.signal]),
+                    settings.speechAcceleration,
+                  ),
+                ).pipe(
+                  Effect.timeout("2 minutes"),
+                  Effect.catchTags({
+                    TimeoutError: (cause) =>
+                      Effect.fail(
+                        new SpeechOperationError({ operation: "model preparation", cause }),
+                      ),
+                  }),
+                ),
               ),
-            ).pipe(
-              Effect.timeout("2 minutes"),
-              Effect.catchTags({
-                TimeoutError: (cause) =>
-                  Effect.fail(new SpeechOperationError({ operation: "model preparation", cause })),
-              }),
             ),
           ),
-        ),
-      ),
     ),
   );
 
@@ -577,7 +702,8 @@ const make = Effect.gen(function* () {
       return yield* exclusive(
         "transcription",
         Effect.gen(function* () {
-          yield* requireSupported;
+          const provider = providerTranscriber(settings);
+          if (!provider) yield* requireSupported;
           const pcm = yield* Effect.try({
             try: () => decodeSpeechPcm(pcmBytes),
             catch: (cause) => speechError("transcription", cause),
@@ -585,6 +711,39 @@ const make = Effect.gen(function* () {
           if (pcm.length === 0) return "";
           activeTranscriptions += 1;
           return yield* Effect.gen(function* () {
+            if (provider) {
+              const apiKey = yield* requireSettingsSecret(secrets, provider.apiKey).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new SpeechOperationError({ operation: "provider transcription", cause }),
+                ),
+              );
+              const dictionary = normalizeSpeechCustomWords(options.speechCustomWords);
+              const text = yield* transcribeWithProvider(provider, apiKey, pcm).pipe(
+                Effect.mapError((cause) => speechError("provider transcription", cause)),
+                Effect.timeoutOrElse({
+                  duration: "5 minutes",
+                  orElse: () =>
+                    Effect.fail(
+                      new SpeechOperationError({
+                        operation: "provider transcription",
+                        cause: new Error(
+                          "the transcription endpoint did not finish in five minutes",
+                        ),
+                      }),
+                    ),
+                }),
+              );
+              const correct = makeSpeechTextCorrector(
+                dictionary.map(({ term }) => term),
+                dictionary,
+              );
+              return finalizeTranscript(
+                correct(text),
+                options,
+                options.speechLanguage === "auto" ? undefined : options.speechLanguage,
+              );
+            }
             const definition = selectedModel(settings);
             const language = effectiveSpeechLanguage(definition, options.speechLanguage);
             const translateToEnglish =
@@ -727,6 +886,11 @@ const make = Effect.gen(function* () {
       }),
     );
     const settings = yield* readSettings(operation);
+    if (providerTranscriber(settings))
+      return yield* new SpeechOperationError({
+        operation,
+        cause: new Error("the configured transcription endpoint does not stream"),
+      });
     const definition = selectedModel(settings);
     const language = effectiveSpeechLanguage(definition, options.speechLanguage);
     const dictionary = normalizeSpeechCustomWords(options.speechCustomWords);
