@@ -369,6 +369,11 @@ export const PI_MODEL_SELECTION = {
   model: "openrouter/deepseek/deepseek-v4-flash",
 } satisfies ModelSelection;
 
+export const OMP_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("omp"),
+  model: "default",
+} satisfies ModelSelection;
+
 export const ACP_REGISTRY_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("acpRegistry"),
   model: "default",

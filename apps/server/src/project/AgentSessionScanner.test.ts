@@ -1254,6 +1254,77 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect("imports omp sessions from the configured omp agent directory", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const nowMs = Date.parse("2026-11-07T00:00:00.000Z");
+        yield* TestClock.setTime(nowMs);
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const ompAgentDir = yield* makeTempDir("t3code-omp-agent-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+
+        yield* writeTranscript({
+          filePath: path.join(ompAgentDir, "sessions", "--workspace--", "omp-session.jsonl"),
+          contents: [
+            JSON.stringify({ type: "title", title: "omp refactor" }),
+            JSON.stringify({
+              type: "session",
+              version: 3,
+              id: "omp-recent",
+              timestamp: "2026-11-07T00:00:00.000Z",
+              cwd: workspace,
+            }),
+            JSON.stringify({
+              type: "message",
+              id: "message-1",
+              parentId: null,
+              timestamp: "2026-11-07T00:00:01.000Z",
+              message: { role: "user", content: [{ type: "text", text: "Plan the change" }] },
+            }),
+            JSON.stringify({
+              type: "message",
+              id: "message-2",
+              parentId: "message-1",
+              timestamp: "2026-11-07T00:00:02.000Z",
+              message: {
+                role: "assistant",
+                provider: "openai",
+                model: "gpt-5.2",
+                content: [{ type: "text", text: "Done" }],
+              },
+            }),
+          ].join("\n"),
+          mtimeMs: nowMs,
+        });
+
+        const threads = yield* runRecentThreads({
+          claudeHomePath,
+          codexHomePath,
+          workspaceRoot: workspace,
+          providerInstances: {
+            [ProviderInstanceId.make("omp")]: {
+              driver: ProviderDriverKind.make("omp"),
+              enabled: true,
+              environment: [{ name: "PI_CODING_AGENT_DIR", value: ompAgentDir, sensitive: false }],
+              config: {},
+            },
+          },
+        });
+
+        expect(threads).toHaveLength(1);
+        expect(threads[0]).toMatchObject({
+          source: "omp",
+          providerSessionId: "omp-recent",
+          title: "omp refactor",
+        });
+        expect(threads[0]?.messages.map((message) => message.text)).toEqual([
+          "Plan the change",
+          "Done",
+        ]);
+      }),
+    );
+
     it.effect("keeps the provider instance that owns a custom session home", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
@@ -2859,6 +2930,48 @@ describe("parseAgentSessionTranscript", () => {
 
     expect(thread?.title).toBe("Fix the import titles");
     expect(thread?.messages.map((message) => message.text)).toEqual([prompt]);
+  });
+
+  it("imports omp JSONL sessions through the Pi-family branch parser", () => {
+    const thread = AgentSessionScanner.parseAgentSessionTranscript({
+      contents: [
+        JSON.stringify({ type: "title", title: "omp refactor" }),
+        JSON.stringify({
+          type: "session",
+          version: 3,
+          id: "omp-session",
+          timestamp: "2026-11-07T00:00:00.000Z",
+          cwd: "/project",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "message-1",
+          parentId: null,
+          timestamp: "2026-11-07T00:00:01.000Z",
+          message: { role: "user", content: [{ type: "text", text: "Fix it" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "message-2",
+          parentId: "message-1",
+          timestamp: "2026-11-07T00:00:02.000Z",
+          message: {
+            role: "assistant",
+            provider: "openai",
+            model: "gpt-5.2",
+            content: [{ type: "text", text: "Done" }],
+          },
+        }),
+      ].join("\n"),
+      source: "omp",
+      providerInstanceId: ProviderInstanceId.make("omp"),
+      fallbackSessionId: "fallback",
+      lastActiveAtMs: Date.parse("2026-11-07T00:00:02.000Z"),
+    });
+
+    expect(thread?.title).toBe("omp refactor");
+    expect(thread?.providerSessionId).toBe("omp-session");
+    expect(thread?.messages.map((message) => message.text)).toEqual(["Fix it", "Done"]);
   });
 
   it("skips sessions without a visible user message", () => {

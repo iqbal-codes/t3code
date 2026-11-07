@@ -178,6 +178,15 @@ const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean =>
     );
   }
 
+  if (provider.driver === ProviderDriverKind.make("omp")) {
+    // omp's model list is auth-filtered; a completed empty probe means signed out.
+    return !(
+      provider.installed &&
+      (provider.status === "ready" || provider.status === "warning") &&
+      provider.auth.status !== "unknown"
+    );
+  }
+
   if (provider.driver === ProviderDriverKind.make("acpRegistry")) {
     // Only completed ACP discovery provides nativeSessions and inventory; placeholder probes cannot establish auth for agents without sign-in.
     return !(
