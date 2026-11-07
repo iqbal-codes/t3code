@@ -42,6 +42,8 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { piHome, resolvePiSessionsDir } from "@t3tools/provider-pi/server/usage";
+import { OmpSettings } from "@t3tools/provider-omp/settings";
+import { resolveOmpSessionsDirForInstance } from "@t3tools/provider-omp/server/usage";
 import * as ServerSettings from "../serverSettings.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import {
@@ -134,6 +136,7 @@ const TranscriptRecord = Schema.Struct({
   isSidechain: Schema.optional(Schema.Boolean),
   isMeta: Schema.optional(Schema.Boolean),
   isCompactSummary: Schema.optional(Schema.Boolean),
+  title: Schema.optional(Schema.String),
   message: Schema.optional(TranscriptMessage),
   payload: Schema.optional(
     Schema.Struct({
@@ -158,6 +161,7 @@ const CodexSessionIndexEntry = Schema.Struct({
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+const decodeOmpSettings = Schema.decodeOption(OmpSettings);
 const decodeTranscriptRecord = Schema.decodeUnknownOption(Schema.fromJsonString(TranscriptRecord));
 const decodeTranscriptValue = Schema.decodeUnknownOption(TranscriptRecord);
 const decodePiEntryLinks = Schema.decodeUnknownOption(
@@ -417,6 +421,10 @@ function deriveTitle(source: AgentSessionSource, text: string): string | undefin
 }
 
 // Pi keeps abandoned branches in the file; its active branch runs from the last entry to the root.
+function isPiFamilySource(source: AgentSessionSource): boolean {
+  return source === "pi" || source === "omp";
+}
+
 function activePiBranch(
   records: ReadonlyArray<DecodedTranscriptRecord>,
 ): ReadonlyArray<DecodedTranscriptRecord> {
@@ -477,14 +485,17 @@ function parseAgentSessionRecords(
   let providerSessionId =
     input.source === "codex"
       ? ""
-      : input.source === "pi"
+      : isPiFamilySource(input.source)
         ? records.find((record) => record.type === "session")?.id?.trim() || input.fallbackSessionId
         : (claudeFields.sessionId ?? input.fallbackSessionId);
   // Pi titles a session by its latest session_info on any branch; an empty name clears it.
+  // omp stores its title in a `title` entry, which may be revisited by the branch walk.
   const title =
-    input.source === "pi"
-      ? records.findLast((record) => record.type === "session_info")?.name?.trim() || null
-      : (claudeFields.title ?? null);
+    input.source === "omp"
+      ? records.findLast((record) => record.type === "title")?.title?.trim() || null
+      : input.source === "pi"
+        ? records.findLast((record) => record.type === "session_info")?.name?.trim() || null
+        : (claudeFields.title ?? null);
   let model = claudeFields.model ?? null;
   let derivedTitle: string | undefined;
   let hasCodexSessionId = false;
@@ -577,9 +588,9 @@ function parseAgentSessionRecords(
   };
 
   let recordIndex = -1;
-  for (const record of input.source === "pi" ? activePiBranch(records) : records) {
+  for (const record of isPiFamilySource(input.source) ? activePiBranch(records) : records) {
     recordIndex += 1;
-    if (input.source === "pi") {
+    if (isPiFamilySource(input.source)) {
       if (!isPiConversationRecord(record)) continue;
       const text = extractText(record.message.content);
       if (text.length === 0) continue;
@@ -696,8 +707,8 @@ function shouldRetainDecodedRecord(
   source: AgentSessionSource,
   record: DecodedTranscriptRecord,
 ): boolean {
-  // Any Pi entry can be a link on the active branch.
-  if (source === "pi") return true;
+  // Any Pi-family entry can be a link on the active branch.
+  if (isPiFamilySource(source)) return true;
   if (source === "claudeAgent") {
     if (isHiddenClaudeRecord(record) || (record.type !== "user" && record.type !== "assistant")) {
       return false;
@@ -850,6 +861,11 @@ export const make = Effect.gen(function* () {
   const baseDir = path.resolve(serverConfig.baseDir);
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
   const platform = yield* HostProcess.Platform;
+  // macOS reports /private/var for paths created under /var; compare both forms.
+  const realBaseDir = yield* fileSystem.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir));
+  const realWorktreesDir = yield* fileSystem
+    .realPath(worktreesDir)
+    .pipe(Effect.orElseSucceed(() => worktreesDir));
   const isWindows = platform === "win32";
   const foldWorktreeCase = isWindows;
   const hostEnvironment = yield* HostProcess.Environment;
@@ -875,7 +891,11 @@ export const make = Effect.gen(function* () {
     normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
       normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
     ) ||
-    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
+    normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
+      normalizeForWorktreeMatch(realBaseDir, foldWorktreeCase),
+    ) ||
+    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase) ||
+    isT3ManagedWorktree(candidatePath, realWorktreesDir, foldWorktreeCase);
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -1259,8 +1279,8 @@ export const make = Effect.gen(function* () {
               reader.write(decoder.decode());
               const value = reader.finish();
               const decoded = decodeTranscriptValue(value);
-              if (Option.isNone(decoded) && source === "pi") {
-                // Pi accepts messages this schema rejects, such as null content; keep their tree links.
+              if (Option.isNone(decoded) && isPiFamilySource(source)) {
+                // Pi and omp accept messages this schema rejects, such as null content; keep their tree links.
                 records.push(...Option.toArray(decodePiEntryLinks(value)));
               } else if (Option.isSome(decoded)) {
                 if (Option.isNone(cwd)) cwd = Option.fromNullOr(extractDecodedCwd(decoded.value));
@@ -1271,7 +1291,7 @@ export const make = Effect.gen(function* () {
                   if (source === "claudeAgent") {
                     historyBytes += recordBytes - claudeHistory.push(decoded.value, recordBytes);
                   } else if (
-                    source === "pi" &&
+                    isPiFamilySource(source) &&
                     decoded.value.type === "message" &&
                     !isPiConversationRecord(decoded.value)
                   ) {
@@ -1727,7 +1747,7 @@ export const make = Effect.gen(function* () {
     let truncated = false;
     let metadataTruncated = false;
 
-    for (const source of ["claudeAgent", "codex", "pi"] as const) {
+    for (const source of ["claudeAgent", "codex", "pi", "omp"] as const) {
       const instances: Array<{
         readonly instanceId: ProviderInstanceId;
         readonly config: ProviderInstanceConfig;
@@ -1770,10 +1790,19 @@ export const make = Effect.gen(function* () {
             instance.environment,
             hostEnvironment,
           ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir));
-          homePath = resolvePiSessionsDir(
+          homePath = resolvePiSessionsDir(environment, piHome(environment, homeDir, platform), path);
+        } else if (source === "omp") {
+          const environment = yield* mergeProviderInstanceEnvironment(
+            instance.environment,
+            hostEnvironment,
+          ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir));
+          const ompConfig = decodeOmpSettings(instance.config ?? {});
+          if (Option.isNone(ompConfig)) continue;
+          homePath = resolveOmpSessionsDirForInstance(
             environment,
-            piHome(environment, homeDir, platform),
+            homeDir,
             path,
+            ompConfig.value.profile,
           );
         } else if (source === "claudeAgent") {
           const config = decodeClaudeSettings(instance.config ?? {});

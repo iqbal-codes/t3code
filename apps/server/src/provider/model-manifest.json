@@ -100,6 +100,15 @@
       ]
     },
     {
+      "driver": "omp",
+      "t3CodeRange": ">=0.0.46",
+      "recommendedRange": ">=18.17.0",
+      "ranges": [
+        { "range": ">=18.17.0", "status": "supported" },
+        { "range": "<18.17.0", "status": "unsupported" }
+      ]
+    },
+    {
       "driver": "muse",
       "t3CodeRange": ">=0.0.46",
       "recommendedRange": ">=1.4.2",

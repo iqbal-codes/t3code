@@ -57,4 +57,10 @@ approvals for actions that support them.
 Kiro offers only **Supervised** and **Full access**. In **Supervised** Kiro also asks you to
 review a turn's file changes. See [Kiro permissions](./providers-kiro.md#permission-modes).
 
+omp maps the mode to its launch-time approval mode: **Supervised** asks for shell, edit, delete,
+and move calls, **Auto-accept edits** allows reads and writes but asks for commands, and **Full
+access** runs without T3 Code prompts. Changing the mode restarts the omp session. MCP tools are
+write-tier in omp, so Supervised also asks before they run. See
+[omp permissions](./providers-omp.md#permission-modes).
+
 See the [provider guides](./install.md#providers) for setup and provider-specific limits.

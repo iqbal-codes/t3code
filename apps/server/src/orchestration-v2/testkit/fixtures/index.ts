@@ -250,6 +250,7 @@ import {
   GROK_MODEL_SELECTION,
   KIRO_MODEL_SELECTION,
   MUSE_MODEL_SELECTION,
+  OMP_MODEL_SELECTION,
   OPENCODE_MODEL_SELECTION,
   OPENCODE2_MODEL_SELECTION,
   PI_MODEL_SELECTION,
@@ -865,6 +866,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         transcriptFile: new URL("./simple/pi_transcript.ndjson", import.meta.url),
         modelSelection: PI_MODEL_SELECTION,
         assertOutput: assertPiSimpleOutput,
+      },
+      {
+        driver: ProviderDriverKind.make("omp"),
+        transcriptFile: new URL("./simple/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
+        assertOutput: assertSimpleOutput,
       },
       {
         driver: ProviderDriverKind.make("muse"),
