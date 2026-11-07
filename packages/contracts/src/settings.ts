@@ -62,6 +62,7 @@ import {
   SpeechLanguage,
   SpeechModelUnloadTimeout,
   SpeechPostProcessingPromptSettings,
+  SpeechTranscriber,
 } from "./speech.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
@@ -1393,6 +1394,16 @@ export const ServerSettings = Schema.Struct({
   cloudSpeechCredentials: CloudSpeechCredentials.pipe(
     Schema.withDecodingDefault(Effect.succeed({ openai: "", xai: "", openrouter: "" })),
   ),
+  speechTranscriber: SpeechTranscriber.pipe(
+    Schema.withDecodingDefault(Effect.succeed("local" as const)),
+  ),
+  /** An OpenAI-compatible endpoint, such as a local router serving `/audio/transcriptions`. */
+  speechProviderBaseUrl: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  speechProviderModel: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  speechProviderApiKey: SettingsSecretValue.pipe(
+    secretSetting,
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
   speechModelId: Schema.String.pipe(
     Schema.withDecodingDefault(Effect.succeed("handy-computer/parakeet-unified-en-0.6b-gguf")),
   ),
@@ -1855,6 +1866,10 @@ export const ServerSettingsPatch = Schema.Struct({
       openrouter: Schema.optionalKey(SettingsSecretValue),
     }),
   ),
+  speechTranscriber: Schema.optionalKey(SpeechTranscriber),
+  speechProviderBaseUrl: Schema.optionalKey(TrimmedString),
+  speechProviderModel: Schema.optionalKey(TrimmedString),
+  speechProviderApiKey: Schema.optionalKey(SettingsSecretValue),
   speechModelId: Schema.optionalKey(Schema.String),
   speechAcceleration: Schema.optionalKey(SpeechAcceleration),
   speechModelUnloadTimeout: Schema.optionalKey(SpeechModelUnloadTimeout),

@@ -26,6 +26,7 @@ import {
   type SpeechBenchmarkTier,
   type SpeechCustomWords,
   type SpeechModelUnloadTimeout,
+  type SpeechTranscriber,
   type VoiceShortcutMode,
 } from "@t3tools/contracts";
 import { createModelSelection, pickModelSelection } from "@t3tools/shared/model";
@@ -92,6 +93,7 @@ import { VoiceInputSetup } from "../chat/VoiceInputSetup";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
+import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import {
@@ -122,6 +124,7 @@ import { toastManager } from "../ui/toast";
 import { MicrophoneOrderList } from "./MicrophoneOrderList";
 import { MicrophoneTest } from "./MicrophoneTest";
 import { CloudVoiceConfiguration } from "./CloudVoiceConfiguration";
+import { SecretInput } from "./SecretInput";
 import { ModelBenchmarks, orderSpeechLanguages } from "./SpeechModelComparison";
 import { languageLabel, SpeechLanguageSelect } from "./SpeechLanguageSelect";
 import { filterSpeechModels, type SpeechModelSort } from "./speechModelBrowser";
@@ -617,6 +620,12 @@ function CleanupModelRow() {
 
 function useVoiceModels(prepared: PreparedConnection | null) {
   const canManage = useEnvironmentScope(prepared?.environmentId ?? null, AuthSettingsWriteScope);
+  // The source is environment settings, so changing it must reload the status and catalog.
+  const transcriberSettings = useScopedSettings((settings) =>
+    [settings.speechTranscriber, settings.speechProviderBaseUrl, settings.speechProviderModel].join(
+      "\u0000",
+    ),
+  );
   const [models, setModels] = useState<readonly EnvironmentSpeechModel[]>([]);
   const [status, setStatus] = useState<EnvironmentSpeechStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -631,6 +640,12 @@ function useVoiceModels(prepared: PreparedConnection | null) {
   }
   const epoch = useRef(0);
   const refreshRevision = useRef(0);
+  // What the loaded status and catalog describe: a source change swaps the transcriber behind
+  // the same connection, so the cached values no longer apply.
+  const loadedSource = useRef<{ prepared: PreparedConnection | null; source: string }>({
+    prepared: null,
+    source: "",
+  });
   const refresh = useStableCallback(
     async (connection: PreparedConnection, mode: "foreground" | "progress") => {
       const current = epoch.current;
@@ -661,14 +676,18 @@ function useVoiceModels(prepared: PreparedConnection | null) {
       }
     },
   );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the environment's model catalog when its connection becomes available
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the environment's model catalog when its connection or transcription source changes
   useEffect(() => {
     epoch.current += 1;
-    if (prepared) void refresh(prepared, "foreground");
+    const stale =
+      loadedSource.current.prepared !== prepared ||
+      loadedSource.current.source !== transcriberSettings;
+    loadedSource.current = { prepared, source: transcriberSettings };
+    if (prepared && stale) void refresh(prepared, "foreground");
     return () => {
       epoch.current += 1;
     };
-  }, [prepared, refresh]);
+  }, [prepared, refresh, transcriberSettings]);
   const downloading =
     requestedDownload !== null ||
     models.some((model) => model.state === "downloading" || model.state === "verifying");
@@ -1211,6 +1230,116 @@ function TranscriptionTest(props: {
   );
 }
 
+const TRANSCRIBER_LABELS = {
+  local: "Local model",
+  provider: "Endpoint",
+} satisfies Record<SpeechTranscriber, string>;
+
+/** Where the scoped environment transcribes: its own model, or an OpenAI-compatible endpoint. */
+function TranscriptionSourceSettings() {
+  const scope = useOptionalSettingsScope();
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  if (scope === null) return null;
+  const apiKeyConfigured = settings.speechProviderApiKey !== "";
+  return (
+    <>
+      <SettingsRow
+        serverScoped
+        settingKeys={["speechTranscriber"]}
+        {...searchableSetting("speech-transcriber")}
+        title="Transcription source"
+        description="Transcribe on this environment with a downloaded model, or send recordings to an OpenAI-compatible endpoint such as a local router."
+        control={
+          <Select
+            value={settings.speechTranscriber}
+            onValueChange={(value) => {
+              if (value) updateSettings({ speechTranscriber: value as SpeechTranscriber });
+            }}
+          >
+            <SelectTrigger size="sm" aria-label="Transcription source" className="max-w-72">
+              <SelectValue>{TRANSCRIBER_LABELS[settings.speechTranscriber]}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem value="local">{TRANSCRIBER_LABELS.local}</SelectItem>
+              <SelectItem value="provider">{TRANSCRIBER_LABELS.provider}</SelectItem>
+            </SelectPopup>
+          </Select>
+        }
+      />
+      {settings.speechTranscriber === "provider" ? (
+        <>
+          <SettingsRow
+            serverScoped
+            settingKeys={["speechProviderBaseUrl"]}
+            {...searchableSetting("speech-provider-endpoint")}
+            title="Endpoint"
+            description="Base URL of an OpenAI-compatible API. Recordings are posted to its /audio/transcriptions route, whose own limits apply."
+            control={
+              <DraftInput
+                size="sm"
+                className="w-full max-w-full @min-[32rem]/settings-row:w-72"
+                aria-label="Transcription endpoint"
+                placeholder="http://127.0.0.1:20128/v1"
+                spellCheck={false}
+                value={settings.speechProviderBaseUrl}
+                onCommit={(next) => updateSettings({ speechProviderBaseUrl: next })}
+              />
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["speechProviderModel"]}
+            {...searchableSetting("speech-provider-model")}
+            title="Model"
+            description="The model name the endpoint expects."
+            control={
+              <DraftInput
+                size="sm"
+                className="w-full max-w-full @min-[32rem]/settings-row:w-56"
+                aria-label="Transcription model"
+                placeholder="cx/transcribe"
+                spellCheck={false}
+                value={settings.speechProviderModel}
+                onCommit={(next) => updateSettings({ speechProviderModel: next })}
+              />
+            }
+          />
+          <SettingsRow
+            serverScoped
+            settingKeys={["speechProviderApiKey"]}
+            {...searchableSetting("speech-provider-api-key")}
+            title="API key"
+            description="Sent as a bearer token and stored on this environment. Leave empty when the endpoint needs none."
+            control={
+              <div className="flex w-full min-w-0 items-center gap-2 @min-[32rem]/settings-row:w-56">
+                <SecretInput
+                  size="sm"
+                  className="min-w-0 flex-1"
+                  configured={apiKeyConfigured}
+                  value=""
+                  onCommit={(next) => updateSettings({ speechProviderApiKey: next })}
+                />
+                {apiKeyConfigured ? (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost-destructive"
+                    onClick={() => updateSettings({ speechProviderApiKey: "" })}
+                    aria-label="Clear API key"
+                  >
+                    <XIcon className="size-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+            }
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
 export function VoiceSettingsPanel() {
   const cleanupEnabled = useCleanupGrant() !== null;
   const settings = useClientSettings();
@@ -1297,10 +1426,10 @@ export function VoiceSettingsPanel() {
       searchTargetFallbacks={{
         "speech-language":
           model || destination.cloudProvider ? undefined : "voice-transcription-destination",
-        "speech-models": prepared ? undefined : "voice-transcription-destination",
-        "speech-hardware": prepared && model ? undefined : "voice-transcription-destination",
+        "speech-models": model?.transcriber === "provider" ? "speech-transcriber" : prepared ? undefined : "voice-transcription-destination",
+        "speech-hardware": model?.transcriber === "provider" ? "speech-transcriber" : prepared && model ? undefined : "voice-transcription-destination",
         "speech-streaming": prepared && model ? undefined : "voice-transcription-destination",
-        "transcription-test": !prepared
+        "transcription-test": model?.transcriber === "provider" ? "speech-transcriber" : !prepared
           ? "voice-transcription-destination"
           : !model || model.state === "missing-model"
             ? "speech-models"
@@ -1514,6 +1643,7 @@ export function VoiceSettingsPanel() {
             </div>
           }
         />
+        {destination.environmentId && !destination.cloudProvider && <TranscriptionSourceSettings />}
         {pendingCloud && cloudEnvironment && (
           <CloudVoiceConfiguration
             key={JSON.stringify(pendingCloud)}
@@ -1592,7 +1722,7 @@ export function VoiceSettingsPanel() {
             />
           }
         />
-        {prepared ? (
+        {prepared && model?.transcriber !== "provider" ? (
           <SpeechModelBrowser
             key={prepared.environmentId}
             prepared={prepared}
@@ -1604,7 +1734,9 @@ export function VoiceSettingsPanel() {
             projectName={project?.title ?? null}
           />
         ) : null}
-        {prepared && <AdvancedSpeechSettings prepared={prepared} catalog={catalog} />}
+        {prepared && model?.transcriber !== "provider" && (
+          <AdvancedSpeechSettings prepared={prepared} catalog={catalog} />
+        )}
       </SettingsSection>
 
       <SettingsSection id="voice-dictionary" title="Dictionary">

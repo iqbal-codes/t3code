@@ -119,6 +119,16 @@ export type SpeechModelUnloadTimeout = typeof SpeechModelUnloadTimeout.Type;
 export const SpeechLanguage = Schema.String.check(Schema.isMinLength(2), Schema.isMaxLength(16));
 export type SpeechLanguage = typeof SpeechLanguage.Type;
 
+/** A downloaded model on the environment, or an OpenAI-compatible endpoint it sends audio to. */
+export const SpeechTranscriber = Schema.Literals(["local", "provider"]);
+export type SpeechTranscriber = typeof SpeechTranscriber.Type;
+
+export const EnvironmentSpeechProvider = Schema.Struct({
+  baseUrl: Schema.String,
+  model: Schema.String,
+});
+export type EnvironmentSpeechProvider = typeof EnvironmentSpeechProvider.Type;
+
 export const SpeechGpuDevice = Schema.Struct({ id: Schema.String, name: Schema.String });
 
 export const SpeechBenchmarkTier = Schema.Literals(["cpu", "accelerated"]);
@@ -227,6 +237,8 @@ const SupportedSpeechStatus = Schema.Struct({
   supportsLanguageDetection: Schema.optionalKey(Schema.Boolean),
   acceleration: SpeechAcceleration,
   benchmarkTier: SpeechBenchmarkTier,
+  transcriber: Schema.optionalKey(SpeechTranscriber),
+  provider: Schema.optionalKey(EnvironmentSpeechProvider),
   modelUnloadTimeout: SpeechModelUnloadTimeout,
   gpuDevices: Schema.Array(SpeechGpuDevice),
 });
