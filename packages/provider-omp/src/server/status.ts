@@ -20,8 +20,9 @@ import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
   isCommandMissingCause,
-  parseGenericCliVersion,
+  parseCliVersionResult,
   providerModelsFromSettings,
+  providerProbeEnvironment,
   spawnAndCollect,
   type ProviderProbeResult,
   type ServerProviderDraft,
@@ -236,11 +237,12 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
     });
   }
 
+  const probeEnvironment = providerProbeEnvironment(environment);
   const versionResult = yield* runOmpCli(
     settings,
     profile.profile,
     ["--version"],
-    environment,
+    probeEnvironment,
   ).pipe(Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS), Effect.result);
   if (Result.isFailure(versionResult) || Option.isNone(versionResult.success)) {
     const missing = Result.isFailure(versionResult) && isCommandMissingCause(versionResult.failure);
@@ -255,7 +257,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
     });
   }
   const versionOutput = versionResult.success.value;
-  const version = parseGenericCliVersion(`${versionOutput.stdout}\n${versionOutput.stderr}`);
+  const version = parseCliVersionResult(versionOutput);
   if (versionOutput.code !== 0) {
     return makeSnapshot(settings, checkedAt, {
       installed: true,
@@ -288,7 +290,7 @@ export const checkOmpProviderStatus = Effect.fn("checkOmpProviderStatus")(functi
     settings,
     profile.profile,
     ["models", "--json"],
-    environment,
+    probeEnvironment,
   ).pipe(Effect.timeoutOption(MODEL_PROBE_TIMEOUT_MS), Effect.result);
   if (Result.isFailure(modelsResult) || Option.isNone(modelsResult.success)) {
     return makeSnapshot(settings, checkedAt, {

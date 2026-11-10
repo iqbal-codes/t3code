@@ -37,6 +37,7 @@ import {
   type SpeechModel,
 } from "./model.ts";
 import { listNativeSpeechGpuDevices, loadNativeSpeechModel } from "./native.ts";
+import { nativeSpeechLanguage } from "./nativeLanguage.ts";
 import { SILERO_VAD } from "./silero.ts";
 import { isSpeechPlatformSupported } from "./platform.ts";
 import * as SpeechModelStore from "./SpeechModelStore.ts";
@@ -564,6 +565,7 @@ const make = Effect.gen(function* () {
         supportsTranslation: false,
         supportsLanguageDetection: true,
         acceleration: "auto",
+        benchmarkTier: "cpu",
         modelUnloadTimeout: "never",
         gpuDevices: [],
       };
@@ -571,6 +573,13 @@ const make = Effect.gen(function* () {
     if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     const definition = selectedModel(settings);
     const ready = yield* store.isReady(definition);
+    const gpuDevices = yield* discoverGpuDevices.pipe(Effect.orElseSucceed(() => []));
+    const autoUsesCpu =
+      gpuDevices.length === 0 ||
+      autoCpuModel === definition.id ||
+      (loadedModelId === definition.id &&
+        loadedAcceleration === "auto" &&
+        model?.backend.toLowerCase() === "cpu");
     return {
       supported: true,
       transcriber: "local",
@@ -584,8 +593,13 @@ const make = Effect.gen(function* () {
       languages: definition.languages,
       supportsLanguageDetection: definition.supportsLanguageDetection,
       acceleration: settings.speechAcceleration,
+      benchmarkTier:
+        settings.speechAcceleration === "cpu" ||
+        (settings.speechAcceleration === "auto" && autoUsesCpu)
+          ? "cpu"
+          : "accelerated",
       modelUnloadTimeout: settings.speechModelUnloadTimeout,
-      gpuDevices: yield* discoverGpuDevices.pipe(Effect.orElseSucceed(() => [])),
+      gpuDevices,
     };
   });
 
@@ -772,11 +786,12 @@ const make = Effect.gen(function* () {
                 try: (signal) => {
                   // Interruption kills the isolated process; the next request reloads the model.
                   signal.addEventListener("abort", () => dropModel(inference), { once: true });
+                  const hint = nativeSpeechLanguage(inference.languages, language);
                   return inference.transcribe(
                     pcm,
                     {
                       timestamps: "none",
-                      ...(language === "auto" ? {} : { language }),
+                      ...(hint ? { language: hint } : {}),
                       ...(translateToEnglish
                         ? { task: "translate" as const, targetLanguage: "en" as const }
                         : {}),
@@ -913,10 +928,11 @@ const make = Effect.gen(function* () {
         streamModel.supportsVocabulary && !translateToEnglish && customWords.length
           ? customWords
           : undefined;
+      const hint = nativeSpeechLanguage(streamModel.languages, language);
       await streamModel.begin(
         {
           timestamps: "none",
-          ...(language === "auto" ? {} : { language }),
+          ...(hint ? { language: hint } : {}),
           ...(translateToEnglish ? { task: "translate", targetLanguage: "en" } : {}),
           ...(vocabulary ? { vocabulary } : {}),
         },
