@@ -95,6 +95,10 @@ import { assertMultiTurnClaudeOutput } from "./multi_turn/claude_output.ts";
 import { assertMultiTurnOutput } from "./multi_turn/codex_output.ts";
 import { assertPiMultiTurnOutput } from "./multi_turn/pi_output.ts";
 import { multiTurnInput } from "./multi_turn/input.ts";
+import { ompSubagentTasksInput } from "./omp_subagent_tasks/input.ts";
+import { assertOmpSubagentTasksOutput } from "./omp_subagent_tasks/output.ts";
+import { ompProposedPlanInput } from "./omp_proposed_plan/input.ts";
+import { assertOmpProposedPlanOutput } from "./omp_proposed_plan/output.ts";
 import { openCodeChildApprovalInput } from "./opencode_child_approval/input.ts";
 import { assertOpenCodeChildApprovalOutput } from "./opencode_child_approval/output.ts";
 import { openCodeRunningChildApprovalInput } from "./opencode_running_child_approval/input.ts";
@@ -878,6 +882,30 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         transcriptFile: new URL("./simple/muse_transcript.ndjson", import.meta.url),
         modelSelection: MUSE_MODEL_SELECTION,
         assertOutput: assertSimpleOutput,
+      },
+    ],
+  },
+  {
+    name: "omp_subagent_tasks",
+    buildInput: ompSubagentTasksInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("omp"),
+        transcriptFile: new URL("./omp_subagent_tasks/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
+        assertOutput: assertOmpSubagentTasksOutput,
+      },
+    ],
+  },
+  {
+    name: "omp_proposed_plan",
+    buildInput: ompProposedPlanInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("omp"),
+        transcriptFile: new URL("./omp_proposed_plan/omp_transcript.ndjson", import.meta.url),
+        modelSelection: OMP_MODEL_SELECTION,
+        assertOutput: assertOmpProposedPlanOutput,
       },
     ],
   },

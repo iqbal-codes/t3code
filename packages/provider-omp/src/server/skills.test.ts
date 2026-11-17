@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { ompSkillsFromJson } from "./skills.ts";
+import { ompSkillsFromJson, resolveOmpSkillSnapshot } from "./skills.ts";
 
 describe("omp skill discovery", () => {
   it("maps omp skill summaries and keeps enabled state", () => {
@@ -53,5 +53,18 @@ describe("omp skill discovery", () => {
 
   it("returns undefined for malformed output", () => {
     assert.equal(ompSkillsFromJson("not json"), undefined);
+  });
+
+  it("keeps the last good list when a probe fails, but honours an empty success", () => {
+    const good =
+      ompSkillsFromJson(JSON.stringify({ skills: [{ name: "alpha", filePath: "/a/SKILL.md" }] })) ??
+      [];
+    assert.isAbove(good.length, 0);
+    assert.deepEqual(resolveOmpSkillSnapshot(good, undefined), { skills: good, cache: good });
+    assert.deepEqual(resolveOmpSkillSnapshot(good, []), { skills: [], cache: [] });
+    assert.deepEqual(resolveOmpSkillSnapshot(undefined, undefined), {
+      skills: [],
+      cache: undefined,
+    });
   });
 });

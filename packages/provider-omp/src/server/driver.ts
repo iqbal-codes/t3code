@@ -1,6 +1,7 @@
 import {
   ProviderDriverKind,
   type ServerProvider,
+  type ServerProviderSkill,
   type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 import { OmpSettings } from "../settings.ts";
@@ -37,7 +38,7 @@ import {
   type ProviderSnapshotSettings,
 } from "@t3tools/provider-core/server/snapshotSettings";
 import { normalizeOmpCommands, withOmpBuiltinSlashCommands } from "./commands.ts";
-import { discoverOmpSkills } from "./skills.ts";
+import { discoverOmpSkills, resolveOmpSkillSnapshot } from "./skills.ts";
 import { makeOmpAuth } from "./auth.ts";
 import { makeOmpAdapterV2Driver, type OmpAdapterV2DriverEnv } from "./adapter.ts";
 import { buildInitialOmpProviderSnapshot, checkOmpProviderStatus } from "./status.ts";
@@ -223,6 +224,8 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
         ),
     });
 
+    const skillsByCwd = new Map<string, ReadonlyArray<ServerProviderSkill>>();
+
     return {
       instanceId,
       driverKind: DRIVER_KIND,
@@ -237,9 +240,15 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv, Path.Path> = {
           Ref.get(liveCommands),
           discoverOmpSkills(effectiveConfig, processEnv, workspaceCwd).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.map((discovered) => {
+              const resolved = resolveOmpSkillSnapshot(skillsByCwd.get(workspaceCwd), discovered);
+              if (resolved.cache === undefined) skillsByCwd.delete(workspaceCwd);
+              else skillsByCwd.set(workspaceCwd, resolved.cache);
+              return resolved.skills;
+            }),
             Effect.catchCause((cause) =>
               Effect.logWarning("omp skill discovery failed", { cwd: workspaceCwd, cause }).pipe(
-                Effect.as([]),
+                Effect.as(skillsByCwd.get(workspaceCwd) ?? []),
               ),
             ),
           ),

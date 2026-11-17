@@ -33,6 +33,7 @@ import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/s
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { selectAcpMcpServers } from "./mcpTransport.ts";
 import { appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "./stderr.ts";
 import {
   collectSessionConfigOptionValues,
@@ -2171,16 +2172,12 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     initializeResult: EffectAcpSchema.InitializeResponse,
     activationOptions?: AcpSessionActivationOptions,
   ): ReadonlyArray<EffectAcpSchema.McpServer> => {
-    const mcpCapabilities = initializeResult.agentCapabilities?.mcpCapabilities;
-    const acpServers = activationOptions?.acpMcpServers ?? options.acpMcpServers ?? [];
-    if (mcpCapabilities?.acp === true && acpServers.length > 0) {
-      return acpServers;
-    }
-    const httpServers = activationOptions?.httpMcpServers ?? options.httpMcpServers ?? [];
-    if (mcpCapabilities?.http === true && httpServers.length > 0) {
-      return httpServers;
-    }
-    return activationOptions?.mcpServers ?? options.mcpServers ?? [];
+    return selectAcpMcpServers({
+      mcpCapabilities: initializeResult.agentCapabilities?.mcpCapabilities,
+      acpServers: activationOptions?.acpMcpServers ?? options.acpMcpServers ?? [],
+      httpServers: activationOptions?.httpMcpServers ?? options.httpMcpServers ?? [],
+      fallback: activationOptions?.mcpServers ?? options.mcpServers ?? [],
+    });
   };
 
   const sessionSetupFields = (initializeResult: EffectAcpSchema.InitializeResponse) => {

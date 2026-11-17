@@ -52,7 +52,7 @@ export const discoverOmpSkills = Effect.fn("discoverOmpSkills")(function* (
   cwd: string,
 ) {
   const profile = resolveOmpProfile(settings.profile);
-  if (!profile.ok) return [];
+  if (!profile.ok) return undefined;
   const command = settings.binaryPath || "omp";
   const result = yield* Effect.gen(function* () {
     const spawnCommand = yield* resolveSpawnCommand(
@@ -70,6 +70,21 @@ export const discoverOmpSkills = Effect.fn("discoverOmpSkills")(function* (
     );
   }).pipe(Effect.timeoutOption(SKILL_LIST_TIMEOUT_MS));
 
-  if (Option.isNone(result) || result.value.code !== 0) return [];
-  return ompSkillsFromJson(result.value.stdout) ?? [];
+  // A failed or timed-out probe is not "no skills": report it so the caller keeps the last good list.
+  if (Option.isNone(result) || result.value.code !== 0) return undefined;
+  return ompSkillsFromJson(result.value.stdout);
 });
+
+export interface OmpSkillSnapshot {
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly cache: ReadonlyArray<ServerProviderSkill> | undefined;
+}
+
+/** A failed probe keeps the last good list; only a successful one replaces it. */
+export function resolveOmpSkillSnapshot(
+  cached: ReadonlyArray<ServerProviderSkill> | undefined,
+  discovered: ReadonlyArray<ServerProviderSkill> | undefined,
+): OmpSkillSnapshot {
+  if (discovered === undefined) return { skills: cached ?? [], cache: cached };
+  return { skills: discovered, cache: discovered };
+}

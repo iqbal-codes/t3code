@@ -39,6 +39,7 @@ import {
   ompPermissionDisposition,
 } from "./acpSupport.ts";
 import { extractOmpElicitationForm } from "./elicitation.ts";
+import { extractOmpProposedPlanMarkdown } from "./plan.ts";
 import { extractOmpSubagentUpdate, isOmpSubagentTool } from "./subagents.ts";
 
 export const OMP_PROVIDER = ProviderDriverKind.make("omp");
@@ -151,12 +152,16 @@ function makeOmpAcpAdapterFlavor(options: OmpAdapterV2Options): AcpAdapterV2Flav
     driver: OMP_PROVIDER,
     runtimeHarness: "omp",
     capabilities: OmpProviderCapabilitiesV2,
+    // omp advertises ACP `mcpCapabilities.http`; injecting HTTP skips the stdio bridge, whose
+    // spawn and bearer failures omp swallows into an empty tool set with only a bootstrap notice.
+    mcpOverHttp: true,
     makeRuntime,
     customModels: customModelSlugs(options.settings),
     promptFailure: ompPromptFailure,
     approvalOptions: ompApprovalOptions,
     permissionDisposition: ompPermissionDisposition,
     extractElicitationForm: extractOmpElicitationForm,
+    extractProposedPlanMarkdown: extractOmpProposedPlanMarkdown,
     extractSubagentUpdate: extractOmpSubagentUpdate,
     isProvisionalSubagentTool: isOmpSubagentTool,
     // omp executes `/compact` as an ACP builtin, so no native compact request is needed.
@@ -201,6 +206,16 @@ function makeOmpAcpAdapterFlavor(options: OmpAdapterV2Options): AcpAdapterV2Flav
       },
     },
     reportsPerTurnPromptUsage: true,
+    // MCP startup failures arrive as notices during session setup, outside any turn, where the
+    // turn path drops them; keep them in the server log.
+    onSessionEvent: (event) =>
+      event._tag === "NoticeReceived"
+        ? Effect.logWarning("omp session notice", {
+            severity: event.severity,
+            title: event.title,
+            ...(event.description === undefined ? {} : { description: event.description }),
+          })
+        : Effect.void,
     ...(options.onAvailableCommands === undefined
       ? {}
       : { onAvailableCommandsUpdate: options.onAvailableCommands }),

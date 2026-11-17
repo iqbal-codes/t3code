@@ -4147,6 +4147,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ? toolCall
               : { ...toolCall, backgroundCommandTaskId },
           );
+          // Agents propose their plan mid-turn; the post-settle path only sees late wakes.
+          const proposedPlanMarkdown = flavor.extractProposedPlanMarkdown?.(toolCall);
+          if (proposedPlanMarkdown !== undefined && proposedPlanMarkdown.length > 0) {
+            yield* captureProposedPlan({ planMarkdown: proposedPlanMarkdown });
+          }
           if (
             followsAgentWorkState &&
             projectedStatus === undefined &&
