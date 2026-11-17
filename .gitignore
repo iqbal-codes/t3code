@@ -26,6 +26,9 @@ __screenshots__/
 squashfs-root/
 .vercel
 .gstack/
+.graft/
+.trail/
+/graft/
 .plans/
 /audits/
 dist-electron/

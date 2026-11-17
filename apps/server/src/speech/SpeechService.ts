@@ -567,6 +567,7 @@ const make = Effect.gen(function* () {
         supportsTranslation: false,
         supportsLanguageDetection: true,
         acceleration: "auto",
+        benchmarkTier: "cpu",
         modelUnloadTimeout: "never",
         gpuDevices: [],
       };

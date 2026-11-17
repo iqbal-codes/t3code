@@ -1848,6 +1848,7 @@ function ImportCandidateRow({
 const IMPORT_SOURCE_NAMES: Record<AgentSessionSource, string> = {
   claudeAgent: "Claude Code",
   codex: "Codex",
+  omp: "oh-my-pi",
   pi: "Pi",
 };
 const IMPORT_SOURCES_LABEL = new Intl.ListFormat("en", { type: "conjunction" }).format(
